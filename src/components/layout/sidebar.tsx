@@ -5,20 +5,16 @@ import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import {
   LayoutDashboard,
-  Facebook,
-  Chrome,
   Palette,
-  TrendingUp,
+  Calculator,
   Settings,
   BarChart3,
 } from 'lucide-react'
 
 const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
-  { name: 'Meta Ads', href: '/meta', icon: Facebook },
-  { name: 'Google Ads', href: '/google', icon: Chrome },
-  { name: 'Creative', href: '/creative', icon: Palette },
-  { name: 'MER Tracker', href: '/mer', icon: TrendingUp },
+  { name: 'Creative Analytics', href: '/creative', icon: Palette },
+  { name: 'Contribution Margin', href: '/mer', icon: Calculator },
   { name: 'Settings', href: '/settings', icon: Settings },
 ]
 
@@ -34,7 +30,7 @@ export function Sidebar() {
         </div>
         <div className="flex flex-col">
           <span className="text-sm font-semibold text-white">Lower Cross</span>
-          <span className="text-xs text-zinc-500">Media Intelligence</span>
+          <span className="text-xs text-zinc-500">Northbeam Analytics</span>
         </div>
       </div>
 

@@ -3,77 +3,60 @@
 import * as React from 'react'
 import { useAppContext } from '@/contexts/app-context'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { MERGauge } from '@/components/mer/mer-gauge'
 import { MERChart } from '@/components/mer/mer-chart'
-import { TrendingUp, DollarSign, Percent, Calculator } from 'lucide-react'
+import { TrendingUp, DollarSign, Percent, Calculator, Users } from 'lucide-react'
 import { formatCurrency } from '@/lib/utils'
-import { getMERHistory, getClientSummary, type MERData, type Summary } from '@/lib/data/metrics'
-import { demoClients } from '@/lib/seed'
+import { format, startOfMonth } from 'date-fns'
 
 export default function MERPage() {
-  const { selectedClientId, dateRange, isLoading } = useAppContext()
+  const { selectedClientId, clients } = useAppContext()
+  const [data, setData] = React.useState<any>(null)
+  const [loading, setLoading] = React.useState(false)
 
-  const [merHistory, setMerHistory] = React.useState<MERData[]>([])
-  const [summary, setSummary] = React.useState<Summary | null>(null)
-  const [loading, setLoading] = React.useState(true)
-  const [contributionMarginPct, setContributionMarginPct] = React.useState(35)
+  const client = clients.find(c => c.id === selectedClientId)
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH || ''
 
-  const selectedClient = demoClients.find((c) => c.id === selectedClientId)
+  const startOfMonthStr = format(startOfMonth(new Date()), 'yyyy-MM-dd')
+  const todayStr = format(new Date(), 'yyyy-MM-dd')
 
   React.useEffect(() => {
-    async function loadData() {
-      if (!selectedClientId) return
+    if (!selectedClientId) return
+    setLoading(true)
+    fetch(`${basePath}/api/northbeam/data?clientId=${selectedClientId}&breakdown=channel&start=${startOfMonthStr}&end=${todayStr}`)
+      .then(r => r.json())
+      .then(setData)
+      .catch(() => setData(null))
+      .finally(() => setLoading(false))
+  }, [selectedClientId, basePath, startOfMonthStr, todayStr])
 
-      setLoading(true)
-      try {
-        const [merData, summaryData] = await Promise.all([
-          getMERHistory(selectedClientId, dateRange),
-          getClientSummary(selectedClientId, dateRange),
-        ])
-        setMerHistory(merData)
-        setSummary(summaryData)
+  const totals = data?.totals
+  const channels: any[] = data?.channels || []
 
-        // Set contribution margin from client settings
-        if (selectedClient?.target_contribution_margin_pct) {
-          setContributionMarginPct(selectedClient.target_contribution_margin_pct)
-        }
-      } finally {
-        setLoading(false)
-      }
-    }
+  const targetMER = (client as any)?.target_mer || 3.5
+  const targetCMPct = (client as any)?.target_contribution_margin_pct || 35
+  const cogsPct = (client as any)?.cogs_pct ?? 0.45
 
-    loadData()
-  }, [selectedClientId, dateRange, selectedClient])
+  const totalRevenue = totals?.revenue || 0
+  const totalSpend = totals?.spend || 0
+  const currentMER = totalSpend > 0 ? totalRevenue / totalSpend : 0
 
-  const currentLoading = loading || isLoading
+  // Contribution margin: Revenue - COGS - Ad Spend
+  // COGS = revenue * cogsPct
+  const cogs = totalRevenue * cogsPct
+  const cmDollars = totalRevenue - cogs - totalSpend
+  const cmPct = totalRevenue > 0 ? (cmDollars / totalRevenue) * 100 : 0
 
-  // Calculate current MER
-  const currentMER = summary?.current
-    ? summary.current.revenue / summary.current.spend
-    : 0
-  const previousMER = summary?.previous
-    ? summary.previous.revenue / summary.previous.spend
-    : 0
-  const targetMER = selectedClient?.target_mer || 3.5
-
-  // Calculate contribution margin
-  const totalRevenue = summary?.current.revenue || 0
-  const totalSpend = summary?.current.spend || 0
-  const contributionMargin = (totalRevenue * (contributionMarginPct / 100)) - totalSpend
-
-  // Channel breakdown from MER data
-  const latestMER = merHistory[merHistory.length - 1]
+  // aMER = New Customer Revenue / Total Spend
+  const newCustomerRevenue = totals?.new_customer_revenue || 0
+  const aMER = totalSpend > 0 ? newCustomerRevenue / totalSpend : 0
 
   if (!selectedClientId) {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="text-center">
           <h2 className="text-xl font-semibold text-white">No Client Selected</h2>
-          <p className="mt-2 text-zinc-400">
-            Select a client from the dropdown to view MER data.
-          </p>
+          <p className="mt-2 text-zinc-400">Select a client from the dropdown.</p>
         </div>
       </div>
     )
@@ -81,212 +64,152 @@ export default function MERPage() {
 
   return (
     <div className="space-y-6">
-      {/* Page header */}
+      {/* Header */}
       <div className="flex items-center gap-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-500/20">
-          <TrendingUp className="h-5 w-5 text-amber-400" />
+          <Calculator className="h-5 w-5 text-amber-400" />
         </div>
         <div>
-          <h1 className="text-2xl font-bold text-white">MER & Efficiency Tracker</h1>
-          <p className="text-zinc-400">Marketing efficiency ratio and contribution margin analysis</p>
+          <h1 className="text-2xl font-bold text-white">Contribution Margin & MER</h1>
+          <p className="text-zinc-400">P&L truth — Month to date from Northbeam</p>
         </div>
       </div>
 
-      {/* Top row: MER Gauge + Summary */}
+      {/* MER gauge + summary cards */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <MERGauge
           currentMER={currentMER}
           targetMER={targetMER}
-          previousMER={previousMER}
-          loading={currentLoading}
+          previousMER={0}
+          loading={loading}
         />
 
-        {/* Summary Cards */}
-        <div className="lg:col-span-2 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="lg:col-span-2 grid grid-cols-2 gap-4">
           <Card className="bg-zinc-900 border-zinc-800">
-            <CardContent className="pt-6">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-500/20">
-                  <DollarSign className="h-5 w-5 text-red-400" />
-                </div>
-                <div>
-                  <div className="text-sm text-zinc-400">Total Ad Spend</div>
-                  <div className="text-2xl font-bold text-white">
-                    {currentLoading ? (
-                      <div className="h-8 w-24 bg-zinc-800 rounded animate-pulse" />
-                    ) : (
-                      formatCurrency(totalSpend)
-                    )}
-                  </div>
-                </div>
+            <CardContent className="pt-5">
+              <div className="flex items-center gap-2 mb-2">
+                <DollarSign className="h-4 w-4 text-red-400" />
+                <span className="text-xs text-zinc-400">Ad Spend</span>
               </div>
+              {loading ? <div className="h-8 w-24 bg-zinc-800 rounded animate-pulse" /> :
+                <div className="text-2xl font-bold text-white">{formatCurrency(totalSpend)}</div>}
             </CardContent>
           </Card>
 
           <Card className="bg-zinc-900 border-zinc-800">
-            <CardContent className="pt-6">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/20">
-                  <TrendingUp className="h-5 w-5 text-emerald-400" />
-                </div>
-                <div>
-                  <div className="text-sm text-zinc-400">Total Revenue</div>
-                  <div className="text-2xl font-bold text-white">
-                    {currentLoading ? (
-                      <div className="h-8 w-24 bg-zinc-800 rounded animate-pulse" />
-                    ) : (
-                      formatCurrency(totalRevenue)
-                    )}
-                  </div>
-                </div>
+            <CardContent className="pt-5">
+              <div className="flex items-center gap-2 mb-2">
+                <TrendingUp className="h-4 w-4 text-emerald-400" />
+                <span className="text-xs text-zinc-400">Revenue</span>
               </div>
+              {loading ? <div className="h-8 w-24 bg-zinc-800 rounded animate-pulse" /> :
+                <div className="text-2xl font-bold text-white">{formatCurrency(totalRevenue)}</div>}
             </CardContent>
           </Card>
 
           <Card className="bg-zinc-900 border-zinc-800">
-            <CardContent className="pt-6">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-500/20">
-                  <Percent className="h-5 w-5 text-purple-400" />
-                </div>
-                <div>
-                  <div className="text-sm text-zinc-400">aMER (Adjusted)</div>
-                  <div className="text-2xl font-bold text-purple-400">
-                    {currentLoading ? (
-                      <div className="h-8 w-16 bg-zinc-800 rounded animate-pulse" />
-                    ) : (
-                      `${(currentMER * 0.85).toFixed(2)}x`
-                    )}
-                  </div>
-                </div>
+            <CardContent className="pt-5">
+              <div className="flex items-center gap-2 mb-2">
+                <Users className="h-4 w-4 text-blue-400" />
+                <span className="text-xs text-zinc-400">aMER (New Cust Rev / Spend)</span>
               </div>
+              {loading ? <div className="h-8 w-16 bg-zinc-800 rounded animate-pulse" /> :
+                <div className={`text-2xl font-bold ${aMER >= targetMER ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  {aMER > 0 ? `${aMER.toFixed(2)}x` : '—'}
+                </div>}
             </CardContent>
           </Card>
 
           <Card className="bg-zinc-900 border-zinc-800">
-            <CardContent className="pt-6">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/20">
-                  <Calculator className="h-5 w-5 text-blue-400" />
-                </div>
-                <div>
-                  <div className="text-sm text-zinc-400">Contribution Margin</div>
-                  <div className={`text-2xl font-bold ${contributionMargin >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {currentLoading ? (
-                      <div className="h-8 w-24 bg-zinc-800 rounded animate-pulse" />
-                    ) : (
-                      formatCurrency(contributionMargin)
-                    )}
-                  </div>
-                </div>
+            <CardContent className="pt-5">
+              <div className="flex items-center gap-2 mb-2">
+                <Percent className="h-4 w-4 text-purple-400" />
+                <span className="text-xs text-zinc-400">Contribution Margin</span>
               </div>
+              {loading ? <div className="h-8 w-20 bg-zinc-800 rounded animate-pulse" /> :
+                <div className={`text-2xl font-bold ${cmPct >= targetCMPct ? 'text-emerald-400' : cmPct > 0 ? 'text-amber-400' : 'text-red-400'}`}>
+                  {cmPct.toFixed(1)}%
+                </div>}
             </CardContent>
           </Card>
         </div>
       </div>
 
-      {/* MER Chart */}
-      <MERChart data={merHistory} targetMER={targetMER} loading={currentLoading} />
+      {/* CM breakdown stack */}
+      {!loading && totalRevenue > 0 && (
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardHeader>
+            <CardTitle className="text-sm font-medium text-zinc-300">Contribution Margin Stack</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {[
+                { label: 'Revenue', value: totalRevenue, color: 'text-emerald-400', sign: '' },
+                { label: `COGS (${(cogsPct * 100).toFixed(0)}%)`, value: -cogs, color: 'text-red-400', sign: '−' },
+                { label: 'Ad Spend', value: -totalSpend, color: 'text-red-400', sign: '−' },
+              ].map(({ label, value, color, sign }) => (
+                <div key={label} className="flex items-center justify-between py-2 border-b border-zinc-800">
+                  <span className="text-sm text-zinc-400">{sign} {label}</span>
+                  <span className={`text-sm font-medium ${color}`}>{formatCurrency(Math.abs(value))}</span>
+                </div>
+              ))}
+              <div className="flex items-center justify-between py-2 bg-zinc-800 px-3 rounded-lg">
+                <span className="text-sm font-medium text-white">= Contribution Margin</span>
+                <div className="text-right">
+                  <span className={`text-lg font-bold ${cmDollars >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {formatCurrency(cmDollars)}
+                  </span>
+                  <span className="text-xs text-zinc-500 ml-2">({cmPct.toFixed(1)}%)</span>
+                  {targetCMPct > 0 && (
+                    <div className="text-[10px] text-zinc-500">target: {targetCMPct}%</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
-      {/* Contribution Margin Calculator */}
-      <Card className="bg-zinc-900 border-zinc-800">
-        <CardHeader>
-          <CardTitle className="text-lg font-medium text-white flex items-center gap-2">
-            <Calculator className="h-5 w-5" />
-            Contribution Margin Calculator
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
+      {/* Channel CM breakdown */}
+      {channels.length > 0 && (
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardHeader>
+            <CardTitle className="text-sm font-medium text-zinc-300">Channel Breakdown</CardTitle>
+          </CardHeader>
+          <CardContent>
             <div className="space-y-2">
-              <Label htmlFor="revenue">Total Revenue</Label>
-              <Input
-                id="revenue"
-                value={formatCurrency(totalRevenue)}
-                disabled
-                className="bg-zinc-800 border-zinc-700"
-              />
+              {channels.map((ch: any) => {
+                const chCM = ch.revenue * (1 - cogsPct) - ch.spend
+                const chCMPct = ch.revenue > 0 ? (chCM / ch.revenue) * 100 : 0
+                return (
+                  <div key={ch.channel} className="grid grid-cols-5 gap-2 items-center py-2 border-b border-zinc-800/50 text-xs">
+                    <span className="text-white capitalize font-medium">{ch.channel}</span>
+                    <span className="text-zinc-400 text-right">{formatCurrency(ch.spend)}</span>
+                    <span className="text-zinc-400 text-right">{formatCurrency(ch.revenue)}</span>
+                    <span className={`text-right font-medium ${ch.roas >= targetMER ? 'text-emerald-400' : 'text-amber-400'}`}>
+                      {ch.roas?.toFixed(2) ?? '—'}x
+                    </span>
+                    <span className={`text-right font-medium ${chCMPct >= targetCMPct ? 'text-emerald-400' : chCMPct > 0 ? 'text-amber-400' : 'text-red-400'}`}>
+                      CM: {chCMPct.toFixed(0)}%
+                    </span>
+                  </div>
+                )
+              })}
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="margin">Contribution Margin %</Label>
-              <Input
-                id="margin"
-                type="number"
-                min={0}
-                max={100}
-                value={contributionMarginPct}
-                onChange={(e) => setContributionMarginPct(Number(e.target.value))}
-                className="bg-zinc-800 border-zinc-700"
-              />
+            <div className="grid grid-cols-5 gap-2 text-[10px] text-zinc-600 mt-1">
+              <span>Channel</span><span className="text-right">Spend</span><span className="text-right">Revenue</span><span className="text-right">ROAS</span><span className="text-right">CM%</span>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="spend">Ad Spend</Label>
-              <Input
-                id="spend"
-                value={formatCurrency(totalSpend)}
-                disabled
-                className="bg-zinc-800 border-zinc-700"
-              />
-            </div>
-          </div>
+          </CardContent>
+        </Card>
+      )}
 
-          <div className="mt-6 p-4 bg-zinc-800 rounded-lg">
-            <div className="text-sm text-zinc-400">Formula: (Revenue × Margin%) − Ad Spend = Contribution $</div>
-            <div className="mt-2 text-lg">
-              ({formatCurrency(totalRevenue)} × {contributionMarginPct}%) − {formatCurrency(totalSpend)} ={' '}
-              <span className={`font-bold ${contributionMargin >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                {formatCurrency(contributionMargin)}
-              </span>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* MER by Channel (if we had channel data) */}
-      <Card className="bg-zinc-900 border-zinc-800">
-        <CardHeader>
-          <CardTitle className="text-lg font-medium text-white">
-            MER Breakdown
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <div className="p-4 bg-zinc-800 rounded-lg">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-zinc-400">Meta</span>
-                <span className="text-lg font-bold text-blue-400">
-                  {(currentMER * 0.95).toFixed(2)}x
-                </span>
-              </div>
-              <div className="mt-2 h-2 bg-zinc-700 rounded-full overflow-hidden">
-                <div className="h-full bg-blue-500" style={{ width: `${Math.min((currentMER * 0.95 / targetMER) * 100, 100)}%` }} />
-              </div>
-            </div>
-            <div className="p-4 bg-zinc-800 rounded-lg">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-zinc-400">Google</span>
-                <span className="text-lg font-bold text-emerald-400">
-                  {(currentMER * 1.1).toFixed(2)}x
-                </span>
-              </div>
-              <div className="mt-2 h-2 bg-zinc-700 rounded-full overflow-hidden">
-                <div className="h-full bg-emerald-500" style={{ width: `${Math.min((currentMER * 1.1 / targetMER) * 100, 100)}%` }} />
-              </div>
-            </div>
-            <div className="p-4 bg-zinc-800 rounded-lg">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-zinc-400">Blended</span>
-                <span className="text-lg font-bold text-purple-400">
-                  {currentMER.toFixed(2)}x
-                </span>
-              </div>
-              <div className="mt-2 h-2 bg-zinc-700 rounded-full overflow-hidden">
-                <div className="h-full bg-purple-500" style={{ width: `${Math.min((currentMER / targetMER) * 100, 100)}%` }} />
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+      {!loading && !totals && (
+        <Card className="bg-zinc-900 border-zinc-800">
+          <CardContent className="py-8 text-center">
+            <p className="text-zinc-400 text-sm">No data yet. Sync Northbeam from the Dashboard to see contribution margin.</p>
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }

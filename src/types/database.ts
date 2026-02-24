@@ -20,6 +20,9 @@ export interface Database {
           shopify_store_url: string | null
           target_mer: number | null
           target_contribution_margin_pct: number | null
+          monthly_spend_target: number | null
+          monthly_revenue_target: number | null
+          cogs_pct: number | null
           created_at: string
           updated_at: string
         }
@@ -33,6 +36,9 @@ export interface Database {
           shopify_store_url?: string | null
           target_mer?: number | null
           target_contribution_margin_pct?: number | null
+          monthly_spend_target?: number | null
+          monthly_revenue_target?: number | null
+          cogs_pct?: number | null
           created_at?: string
           updated_at?: string
         }
@@ -46,6 +52,9 @@ export interface Database {
           shopify_store_url?: string | null
           target_mer?: number | null
           target_contribution_margin_pct?: number | null
+          monthly_spend_target?: number | null
+          monthly_revenue_target?: number | null
+          cogs_pct?: number | null
           created_at?: string
           updated_at?: string
         }

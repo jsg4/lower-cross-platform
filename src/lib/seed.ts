@@ -13,6 +13,9 @@ export const demoClients: Omit<Client, 'created_at' | 'updated_at'>[] = [
     shopify_store_url: 'https://elevate-wellness.myshopify.com',
     target_mer: 3.5,
     target_contribution_margin_pct: 35,
+    monthly_spend_target: null,
+    monthly_revenue_target: null,
+    cogs_pct: null,
   },
   {
     id: 'c2b3c4d5-e6f7-8901-bcde-f23456789012',
@@ -24,6 +27,9 @@ export const demoClients: Omit<Client, 'created_at' | 'updated_at'>[] = [
     shopify_store_url: 'https://peak-performance.myshopify.com',
     target_mer: 4.0,
     target_contribution_margin_pct: 40,
+    monthly_spend_target: null,
+    monthly_revenue_target: null,
+    cogs_pct: null,
   },
   {
     id: 'c3c4d5e6-f789-0123-cdef-345678901234',
@@ -35,6 +41,9 @@ export const demoClients: Omit<Client, 'created_at' | 'updated_at'>[] = [
     shopify_store_url: 'https://luxe-home.myshopify.com',
     target_mer: 3.2,
     target_contribution_margin_pct: 32,
+    monthly_spend_target: null,
+    monthly_revenue_target: null,
+    cogs_pct: null,
   },
 ]
 

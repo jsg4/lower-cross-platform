@@ -109,6 +109,15 @@ function getDb(): Database.Database {
   if (!colNames.has('northbeam_client_id')) {
     _db.exec('ALTER TABLE clients ADD COLUMN northbeam_client_id TEXT')
   }
+  if (!colNames.has('monthly_spend_target')) {
+    _db.exec('ALTER TABLE clients ADD COLUMN monthly_spend_target REAL')
+  }
+  if (!colNames.has('monthly_revenue_target')) {
+    _db.exec('ALTER TABLE clients ADD COLUMN monthly_revenue_target REAL')
+  }
+  if (!colNames.has('cogs_pct')) {
+    _db.exec('ALTER TABLE clients ADD COLUMN cogs_pct REAL DEFAULT 0.45')
+  }
 
   return _db
 }
@@ -125,6 +134,7 @@ export const db = {
                shopify_store AS shopify_store_url,
                meta_account_id, google_account_id,
                target_mer, target_contribution_margin_pct,
+               monthly_spend_target, monthly_revenue_target, cogs_pct,
                bigquery_client_id,
                created_at, updated_at,
                CASE WHEN northbeam_key_encrypted IS NOT NULL THEN 'connected' ELSE NULL END AS northbeam_api_key,
@@ -146,6 +156,7 @@ export const db = {
                shopify_store AS shopify_store_url,
                meta_account_id, google_account_id,
                target_mer, target_contribution_margin_pct,
+               monthly_spend_target, monthly_revenue_target, cogs_pct,
                bigquery_client_id,
                created_at, updated_at,
                CASE WHEN northbeam_key_encrypted IS NOT NULL THEN 'connected' ELSE NULL END AS northbeam_api_key,
@@ -166,13 +177,20 @@ export const db = {
     google_account_id?: string | null
     target_mer?: number | null
     target_contribution_margin_pct?: number | null
+    monthly_spend_target?: number | null
+    monthly_revenue_target?: number | null
+    cogs_pct?: number | null
     bigquery_client_id?: string | null
   }) {
     const stmt = getDb().prepare(`
       INSERT INTO clients (id, name, shopify_store, meta_account_id, google_account_id,
-                           target_mer, target_contribution_margin_pct, bigquery_client_id)
+                           target_mer, target_contribution_margin_pct,
+                           monthly_spend_target, monthly_revenue_target, cogs_pct,
+                           bigquery_client_id)
       VALUES (@id, @name, @shopify_store, @meta_account_id, @google_account_id,
-              @target_mer, @target_contribution_margin_pct, @bigquery_client_id)
+              @target_mer, @target_contribution_margin_pct,
+              @monthly_spend_target, @monthly_revenue_target, @cogs_pct,
+              @bigquery_client_id)
       ON CONFLICT(id) DO UPDATE SET
         name = @name,
         shopify_store = @shopify_store,
@@ -180,6 +198,9 @@ export const db = {
         google_account_id = @google_account_id,
         target_mer = @target_mer,
         target_contribution_margin_pct = @target_contribution_margin_pct,
+        monthly_spend_target = @monthly_spend_target,
+        monthly_revenue_target = @monthly_revenue_target,
+        cogs_pct = @cogs_pct,
         bigquery_client_id = @bigquery_client_id,
         updated_at = datetime('now')
     `)
@@ -192,6 +213,9 @@ export const db = {
       google_account_id: client.google_account_id ?? null,
       target_mer: client.target_mer ?? 3.5,
       target_contribution_margin_pct: client.target_contribution_margin_pct ?? 35,
+      monthly_spend_target: client.monthly_spend_target ?? null,
+      monthly_revenue_target: client.monthly_revenue_target ?? null,
+      cogs_pct: client.cogs_pct ?? 0.45,
       bigquery_client_id: client.bigquery_client_id ?? null,
     })
   },
@@ -273,5 +297,135 @@ export const db = {
       triple_whale: !!row?.triple_whale,
       shopify: !!row?.shopify,
     }
+  },
+
+  // ── Northbeam Cache ─────────────────────────────────────
+
+  /** Upsert daily rows into northbeam_daily cache */
+  upsertNorthbeamDaily(rows: {
+    client_id: string; date: string; channel: string | null; campaign_id: string | null;
+    campaign_name: string | null; spend: number; revenue: number;
+    new_customer_revenue: number; returning_customer_revenue: number;
+    transactions: number; new_customers: number; roas: number | null; cac: number | null;
+  }[]) {
+    const stmt = getDb().prepare(`
+      INSERT INTO northbeam_daily
+        (id, client_id, date, channel, campaign_id, campaign_name,
+         spend, revenue, new_customer_revenue, returning_customer_revenue,
+         transactions, new_customers, roas, cac, fetched_at)
+      VALUES
+        (lower(hex(randomblob(16))), @client_id, @date, @channel, @campaign_id, @campaign_name,
+         @spend, @revenue, @new_customer_revenue, @returning_customer_revenue,
+         @transactions, @new_customers, @roas, @cac, datetime('now'))
+      ON CONFLICT(client_id, date, channel, campaign_id) DO UPDATE SET
+        campaign_name = @campaign_name,
+        spend = @spend, revenue = @revenue,
+        new_customer_revenue = @new_customer_revenue,
+        returning_customer_revenue = @returning_customer_revenue,
+        transactions = @transactions, new_customers = @new_customers,
+        roas = @roas, cac = @cac, fetched_at = datetime('now')
+    `)
+    const insertMany = getDb().transaction((items: typeof rows) => {
+      for (const r of items) stmt.run(r)
+    })
+    insertMany(rows)
+  },
+
+  /** Query northbeam_daily data */
+  getNorthbeamDaily(clientId: string, startDate: string, endDate: string) {
+    return getDb()
+      .prepare(`
+        SELECT date, channel, campaign_id, campaign_name,
+               SUM(spend) as spend, SUM(revenue) as revenue,
+               SUM(new_customer_revenue) as new_customer_revenue,
+               SUM(returning_customer_revenue) as returning_customer_revenue,
+               SUM(transactions) as transactions, SUM(new_customers) as new_customers,
+               CASE WHEN SUM(spend) > 0 THEN SUM(revenue)/SUM(spend) ELSE NULL END as roas
+        FROM northbeam_daily
+        WHERE client_id = ? AND date >= ? AND date <= ?
+        GROUP BY date, channel, campaign_id, campaign_name
+        ORDER BY date DESC
+      `)
+      .all(clientId, startDate, endDate) as any[]
+  },
+
+  /** Upsert creative rows into northbeam_creative cache */
+  upsertNorthbeamCreative(rows: {
+    client_id: string; date_start: string; date_end: string; channel: string | null;
+    campaign_name: string | null; ad_id: string | null; ad_name: string | null;
+    spend: number; revenue: number; new_customer_revenue: number;
+    transactions: number; new_customers: number; roas: number | null;
+    cac: number | null; cpm: number | null; ctr: number | null;
+  }[]) {
+    const stmt = getDb().prepare(`
+      INSERT INTO northbeam_creative
+        (id, client_id, date_start, date_end, channel, campaign_name, ad_id, ad_name,
+         spend, revenue, new_customer_revenue, transactions, new_customers,
+         roas, cac, cpm, ctr, fetched_at)
+      VALUES
+        (lower(hex(randomblob(16))), @client_id, @date_start, @date_end, @channel, @campaign_name,
+         @ad_id, @ad_name, @spend, @revenue, @new_customer_revenue, @transactions, @new_customers,
+         @roas, @cac, @cpm, @ctr, datetime('now'))
+      ON CONFLICT(client_id, date_start, date_end, channel, ad_id) DO UPDATE SET
+        campaign_name = @campaign_name, ad_name = @ad_name,
+        spend = @spend, revenue = @revenue, new_customer_revenue = @new_customer_revenue,
+        transactions = @transactions, new_customers = @new_customers,
+        roas = @roas, cac = @cac, cpm = @cpm, ctr = @ctr, fetched_at = datetime('now')
+    `)
+    const insertMany = getDb().transaction((items: typeof rows) => {
+      for (const r of items) stmt.run(r)
+    })
+    insertMany(rows)
+  },
+
+  /** Query northbeam_creative data */
+  getNorthbeamCreative(clientId: string, startDate: string, endDate: string) {
+    return getDb()
+      .prepare(`
+        SELECT channel, campaign_name, ad_id, ad_name,
+               SUM(spend) as spend, SUM(revenue) as revenue,
+               SUM(new_customer_revenue) as new_customer_revenue,
+               SUM(transactions) as transactions, SUM(new_customers) as new_customers,
+               CASE WHEN SUM(spend) > 0 THEN SUM(revenue)/SUM(spend) ELSE NULL END as roas,
+               CASE WHEN SUM(new_customers) > 0 THEN SUM(spend)/SUM(new_customers) ELSE NULL END as cac,
+               AVG(cpm) as cpm, AVG(ctr) as ctr
+        FROM northbeam_creative
+        WHERE client_id = ? AND date_start >= ? AND date_end <= ?
+        GROUP BY channel, ad_id, ad_name, campaign_name
+        ORDER BY spend DESC
+      `)
+      .all(clientId, startDate, endDate) as any[]
+  },
+
+  /** Get/set sync status */
+  getSyncStatus(clientId: string) {
+    return getDb()
+      .prepare('SELECT * FROM northbeam_sync WHERE client_id = ?')
+      .get(clientId) as {
+        client_id: string; last_synced_at: string | null;
+        sync_status: string; error_message: string | null; export_id: string | null;
+      } | undefined
+  },
+
+  setSyncStatus(clientId: string, status: string, error?: string, exportId?: string) {
+    getDb().prepare(`
+      INSERT INTO northbeam_sync (client_id, sync_status, error_message, export_id, last_synced_at)
+      VALUES (?, ?, ?, ?, CASE WHEN ? = 'done' THEN datetime('now') ELSE NULL END)
+      ON CONFLICT(client_id) DO UPDATE SET
+        sync_status = ?,
+        error_message = ?,
+        export_id = ?,
+        last_synced_at = CASE WHEN ? = 'done' THEN datetime('now') ELSE last_synced_at END
+    `).run(clientId, status, error ?? null, exportId ?? null, status,
+           status, error ?? null, exportId ?? null, status)
+  },
+
+  /** Check if Northbeam cache is fresh (< 1 hour old) */
+  isNorthbeamCacheFresh(clientId: string): boolean {
+    const sync = this.getSyncStatus(clientId)
+    if (!sync?.last_synced_at || sync.sync_status !== 'done') return false
+    const lastSync = new Date(sync.last_synced_at + 'Z')
+    const ageMs = Date.now() - lastSync.getTime()
+    return ageMs < 60 * 60 * 1000 // 1 hour
   },
 }

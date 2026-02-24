@@ -51,6 +51,9 @@ interface ClientFormData {
   shopify_store_url: string
   target_mer: string
   target_contribution_margin_pct: string
+  monthly_spend_target: string
+  monthly_revenue_target: string
+  cogs_pct: string
 }
 
 const initialFormData: ClientFormData = {
@@ -60,6 +63,9 @@ const initialFormData: ClientFormData = {
   shopify_store_url: '',
   target_mer: '3.5',
   target_contribution_margin_pct: '35',
+  monthly_spend_target: '',
+  monthly_revenue_target: '',
+  cogs_pct: '45',
 }
 
 type Platform = 'northbeam' | 'triple_whale' | 'shopify'
@@ -359,6 +365,9 @@ export default function SettingsPage() {
         shopify_store_url: client.shopify_store_url || '',
         target_mer: String(client.target_mer || '3.5'),
         target_contribution_margin_pct: String(client.target_contribution_margin_pct || '35'),
+        monthly_spend_target: String((client as any).monthly_spend_target || ''),
+        monthly_revenue_target: String((client as any).monthly_revenue_target || ''),
+        cogs_pct: String((client as any).cogs_pct ? (client as any).cogs_pct * 100 : '45'),
       })
       setEditingClient(clientId)
       setSaveError(null)
@@ -370,14 +379,18 @@ export default function SettingsPage() {
     setSaveError(null)
 
     try {
+      const payload = {
+        ...formData,
+        shopify_store: formData.shopify_store_url,
+        monthly_spend_target: formData.monthly_spend_target ? parseFloat(formData.monthly_spend_target) : null,
+        monthly_revenue_target: formData.monthly_revenue_target ? parseFloat(formData.monthly_revenue_target) : null,
+        cogs_pct: formData.cogs_pct ? parseFloat(formData.cogs_pct) / 100 : 0.45,
+      }
       if (editingClient) {
         const res = await fetch(`${basePath}/api/clients/${editingClient}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...formData,
-            shopify_store: formData.shopify_store_url,
-          }),
+          body: JSON.stringify(payload),
         })
         if (!res.ok) {
           const err = await res.json()
@@ -387,10 +400,7 @@ export default function SettingsPage() {
         const res = await fetch(`${basePath}/api/clients`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...formData,
-            shopify_store: formData.shopify_store_url,
-          }),
+          body: JSON.stringify(payload),
         })
         if (!res.ok) {
           const err = await res.json()
@@ -486,7 +496,7 @@ export default function SettingsPage() {
           />
         </div>
         <div className="space-y-2">
-          <Label htmlFor="target_margin">Contribution Margin %</Label>
+          <Label htmlFor="target_margin">Target Contribution Margin %</Label>
           <Input
             id="target_margin"
             type="number"
@@ -494,6 +504,48 @@ export default function SettingsPage() {
             onChange={(e) => setFormData((prev) => ({ ...prev, target_contribution_margin_pct: e.target.value }))}
           />
         </div>
+      </div>
+      <Separator />
+      <p className="text-xs text-zinc-400 font-medium uppercase tracking-wide">Pacing Goals</p>
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="monthly_spend_target">Monthly Spend Target ($)</Label>
+          <Input
+            id="monthly_spend_target"
+            type="number"
+            placeholder="e.g. 150000"
+            value={formData.monthly_spend_target}
+            onChange={(e) => setFormData((prev) => ({ ...prev, monthly_spend_target: e.target.value }))}
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="monthly_revenue_target">Monthly Revenue Target ($)</Label>
+          <Input
+            id="monthly_revenue_target"
+            type="number"
+            placeholder="e.g. 600000"
+            value={formData.monthly_revenue_target}
+            onChange={(e) => setFormData((prev) => ({ ...prev, monthly_revenue_target: e.target.value }))}
+          />
+        </div>
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="cogs_pct">COGS % (for contribution margin calc)</Label>
+        <div className="flex items-center gap-2">
+          <Input
+            id="cogs_pct"
+            type="number"
+            min="0"
+            max="100"
+            step="1"
+            placeholder="e.g. 45"
+            value={formData.cogs_pct}
+            onChange={(e) => setFormData((prev) => ({ ...prev, cogs_pct: e.target.value }))}
+            className="w-32"
+          />
+          <span className="text-zinc-400 text-sm">% of revenue is COGS</span>
+        </div>
+        <p className="text-xs text-zinc-500">Used to calculate contribution margin from Northbeam revenue</p>
       </div>
       {saveError && (
         <p className="text-sm text-red-400">{saveError}</p>
