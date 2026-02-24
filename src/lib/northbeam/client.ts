@@ -1,15 +1,28 @@
 /**
  * Northbeam Data Export API client.
  *
- * Auth: Authorization: Basic base64(apiKey) + Data-Client-ID header
+ * Auth: Authorization: <apiKey> (raw) + Data-Client-ID header
  * Flow: POST to create export → poll GET for result → download CSV
+ *
+ * API quirks discovered from live testing:
+ * - metrics: array of {id: string} objects, not strings
+ * - breakdowns: array of {key: string, values: string[]} objects
+ * - attribution_options: uses attribution_models, attribution_windows, accounting_modes
+ * - attribution_windows: string numbers ("1","3","7","14","30","60","90"), NOT "7d"
+ * - accounting_modes: "cash" or "accrual", NOT "cash_snapshot"
+ * - No date range param — API exports data for the account's full period
+ * - Poll status: "SUCCESS" (uppercase), result is array of CSV download URLs
+ * - CSV columns: breakdown_platform_northbeam, campaign_name, status,
+ *   accounting_mode, attribution_model, attribution_window,
+ *   spend, attributed_rev, roas, cac, customers_new, etc.
+ * - Multiple rows per entity (one per accounting_mode × window combo)
  */
 
 import { db } from '@/lib/db'
 
 const BASE_URL = 'https://api.northbeam.io/v1'
-const POLL_INTERVAL_MS = 2000
-const MAX_WAIT_MS = 90_000
+const POLL_INTERVAL_MS = 3000
+const MAX_WAIT_MS = 180_000  // 3 minutes — exports take ~2-3 min
 
 export interface NorthbeamCredentials {
   apiKey: string
@@ -17,26 +30,18 @@ export interface NorthbeamCredentials {
 }
 
 export interface NorthbeamRow {
-  date?: string
-  channel?: string
-  platform?: string
-  campaign_id?: string
-  campaign_name?: string
-  ad_id?: string
-  ad_name?: string
-  spend?: number
-  attributed_revenue?: number
-  new_customer_revenue?: number
-  returning_customer_revenue?: number
-  transactions?: number
-  new_customers?: number
-  returning_customers?: number
-  roas?: number
-  cac?: number
-  cpm?: number
-  ctr?: number
   [key: string]: unknown
 }
+
+// All platform values available from Northbeam's breakdowns endpoint
+const ALL_PLATFORMS = [
+  'Facebook Ads', 'Google Ads', 'Google Shopping', 'TikTok', 'Snapchat Ads',
+  'Pinterest', 'Microsoft Ads', 'LinkedIn Ads', 'Reddit', 'YouTube Ads',
+  'Klaviyo', 'Organic Search', 'Organic', 'Direct Mail', 'Influencer',
+  'Amazon - Ads and Organic', 'Affiliate', 'Other', 'Unattributed',
+  'Instagram Organic', 'Facebook Organic', 'YouTube Organic', 'Transactional',
+  'Other Email', 'Meta Shops', 'TikTok Shops',
+]
 
 /** Load Northbeam credentials from SQLite for a client */
 export function getNorthbeamCredentials(appClientId: string): NorthbeamCredentials | null {
@@ -48,7 +53,7 @@ export function getNorthbeamCredentials(appClientId: string): NorthbeamCredentia
 
 function authHeaders(creds: NorthbeamCredentials) {
   return {
-    'Authorization': `Basic ${Buffer.from(creds.apiKey).toString('base64')}`,
+    'Authorization': creds.apiKey,
     'Content-Type': 'application/json',
     'Data-Client-ID': creds.clientId,
   }
@@ -58,47 +63,43 @@ function authHeaders(creds: NorthbeamCredentials) {
 export async function createDataExport(
   creds: NorthbeamCredentials,
   params: {
-    startDate: string  // YYYY-MM-DD
-    endDate: string
     breakdown: 'channel' | 'campaign' | 'creative'
   }
 ): Promise<string> {
-  // Map breakdown to Northbeam breakdowns array
-  const breakdownMap: Record<string, string[]> = {
-    channel: ['platform'],
-    campaign: ['platform', 'campaign'],
-    creative: ['platform', 'campaign', 'ad'],
-  }
-
-  const metrics = [
-    'spend',
-    'attributed_revenue',
-    'new_customer_revenue',
-    'returning_customer_revenue',
-    'transactions',
-    'new_customers',
-    'returning_customers',
-    'roas',
-    'cac',
+  // Core metrics we need
+  const metrics: { id: string }[] = [
+    { id: 'spend' },
+    { id: 'revAttributed' },
+    { id: 'revAttributedFt' },
+    { id: 'revAttributedRtn' },
+    { id: 'roas' },
+    { id: 'cac' },
+    { id: 'customersFt' },
+    { id: 'customersRtn' },
+    { id: 'aov' },
   ]
 
   if (params.breakdown === 'creative') {
-    metrics.push('cpm', 'ctr')
+    metrics.push({ id: 'cpm' }, { id: 'ctr' })
   }
 
+  // Breakdowns: always use Platform, add campaign for campaign/creative level
+  const breakdowns: { key: string; values: string[] }[] = [
+    { key: 'Platform (Northbeam)', values: ALL_PLATFORMS },
+  ]
+
+  // For campaign and creative breakdowns, Northbeam returns campaign_name
+  // automatically when Platform breakdown is used. The API doesn't have
+  // separate "campaign" or "ad" breakdowns — those come as extra columns.
+
   const body = {
-    date_range: {
-      start: params.startDate,
-      end: params.endDate,
-    },
     metrics,
-    breakdowns: breakdownMap[params.breakdown],
+    breakdowns,
     attribution_options: {
-      models: ['clicks_only'],
-      windows: ['7d'],
-      accounting_modes: ['cash_snapshot'],
+      attribution_models: ['northbeam_custom'],   // Clicks only
+      attribution_windows: ['7'],                  // 7-day window
+      accounting_modes: ['cash'],                  // Cash snapshot
     },
-    granularity: 'DAILY',
   }
 
   const res = await fetch(`${BASE_URL}/exports/data-export`, {
@@ -113,18 +114,17 @@ export async function createDataExport(
   }
 
   const data = await res.json()
-  // Northbeam returns { id: "...", status: "..." } or { export_id: "..." }
-  const exportId = data.id || data.export_id
+  const exportId = data.id || data.data_export_id
   if (!exportId) throw new Error(`No export ID in response: ${JSON.stringify(data)}`)
   return exportId
 }
 
-/** Poll until the export is ready, then return download URL or data */
+/** Poll until the export is ready, then return download URLs */
 export async function pollExportResult(
   creds: NorthbeamCredentials,
   exportId: string,
   maxWaitMs = MAX_WAIT_MS
-): Promise<{ url?: string; rows?: NorthbeamRow[] }> {
+): Promise<string[]> {
   const deadline = Date.now() + maxWaitMs
 
   while (Date.now() < deadline) {
@@ -139,19 +139,20 @@ export async function pollExportResult(
     }
 
     const data = await res.json()
+    const status = (data.status || '').toUpperCase()
 
-    // Check various status field names Northbeam might use
-    const status = (data.status || data.export_status || '').toLowerCase()
-
-    if (status === 'done' || status === 'complete' || status === 'completed' || status === 'ready') {
-      return { url: data.url || data.download_url, rows: data.rows || data.data }
+    if (status === 'SUCCESS' || status === 'COMPLETED' || status === 'DONE') {
+      // result is an array of CSV download URLs
+      const urls: string[] = data.result || []
+      if (!urls.length) throw new Error('Export succeeded but no download URLs returned')
+      return urls
     }
 
-    if (status === 'failed' || status === 'error') {
+    if (status === 'FAILED' || status === 'ERROR') {
       throw new Error(`Northbeam export failed: ${data.error || data.message || status}`)
     }
 
-    // Still processing — wait and retry
+    // Still ENQUEUED or PROCESSING — wait and retry
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS))
   }
 
@@ -171,14 +172,13 @@ function parseCSV(text: string): NorthbeamRow[] {
   const lines = text.trim().split('\n')
   if (lines.length < 2) return []
 
-  const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, '').toLowerCase().replace(/ /g, '_'))
+  const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''))
   const rows: NorthbeamRow[] = []
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim()
     if (!line) continue
 
-    // Handle quoted fields with commas
     const values = parseCSVLine(line)
     if (values.length !== headers.length) continue
 
@@ -186,7 +186,7 @@ function parseCSV(text: string): NorthbeamRow[] {
     for (let j = 0; j < headers.length; j++) {
       const val = values[j].replace(/^"|"$/g, '').trim()
       const num = parseFloat(val)
-      row[headers[j]] = isNaN(num) ? val : num
+      row[headers[j]] = val === '' ? null : isNaN(num) ? val : num
     }
     rows.push(row)
   }
@@ -213,23 +213,41 @@ function parseCSVLine(line: string): string[] {
   return result
 }
 
-/** Normalize a Northbeam row to a consistent field set */
+/**
+ * Filter rows to Accrual performance + 7-day window.
+ * Northbeam returns both Accrual and Cash snapshot rows.
+ * Accrual + 7d has attributed_rev and roas; Cash snapshot does not.
+ */
+export function filterAccrualRows(rows: NorthbeamRow[]): NorthbeamRow[] {
+  return rows.filter(r => {
+    const mode = String(r.accounting_mode || '').toLowerCase()
+    const window = String(r.attribution_window || '')
+    return mode.includes('accrual') && window === '7'
+  })
+}
+
+/**
+ * Normalize a Northbeam CSV row to our internal field set.
+ * CSV column names from actual API: breakdown_platform_northbeam,
+ * campaign_name, attributed_rev, customers_new, etc.
+ */
 export function normalizeRow(row: NorthbeamRow) {
+  const channel = String(
+    row.breakdown_platform_northbeam || row.platform || row.channel || ''
+  )
   return {
-    date: String(row.date || row.day || ''),
-    channel: String(row.platform || row.channel || '').toLowerCase(),
-    campaign_id: String(row.campaign_id || row.id || ''),
-    campaign_name: String(row.campaign_name || row.campaign || ''),
-    ad_id: String(row.ad_id || row.ad?.toString() || ''),
-    ad_name: String(row.ad_name || row.ad?.toString() || ''),
+    channel,
+    campaign_name: String(row.campaign_name || ''),
+    ad_name: String(row.ad_name || row.ad || ''),
     spend: Number(row.spend || 0),
-    revenue: Number(row.attributed_revenue || row.revenue || 0),
-    new_customer_revenue: Number(row.new_customer_revenue || 0),
-    returning_customer_revenue: Number(row.returning_customer_revenue || 0),
-    transactions: Number(row.transactions || row.orders || 0),
-    new_customers: Number(row.new_customers || 0),
+    revenue: Number(row.attributed_rev || 0),
+    new_customer_revenue: Number(row.attributed_rev_1st_time || 0),
+    returning_customer_revenue: Number(row.attributed_rev_returning || 0),
+    new_customers: Number(row.customers_new || 0),
+    returning_customers: Number(row.customers_returning || 0),
     roas: row.roas != null ? Number(row.roas) : null,
     cac: row.cac != null ? Number(row.cac) : null,
+    aov: row.aov != null ? Number(row.aov) : null,
     cpm: row.cpm != null ? Number(row.cpm) : null,
     ctr: row.ctr != null ? Number(row.ctr) : null,
   }

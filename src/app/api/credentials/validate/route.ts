@@ -18,11 +18,10 @@ async function validateNorthbeam(apiKey: string, clientId?: string): Promise<{ v
 
   try {
     // Test the Northbeam Data Export API — discovery endpoint
-    const basicAuth = Buffer.from(apiKey).toString('base64')
     const res = await fetch('https://api.northbeam.io/v1/exports/metrics', {
       method: 'GET',
       headers: {
-        'Authorization': `Basic ${basicAuth}`,
+        'Authorization': apiKey,
         'Content-Type': 'application/json',
         'Data-Client-ID': clientId,
       },

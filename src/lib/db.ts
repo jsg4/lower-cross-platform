@@ -301,6 +301,11 @@ export const db = {
 
   // ── Northbeam Cache ─────────────────────────────────────
 
+  /** Clear all northbeam_daily rows for a client (call before re-importing) */
+  clearNorthbeamDaily(clientId: string) {
+    getDb().prepare('DELETE FROM northbeam_daily WHERE client_id = ?').run(clientId)
+  },
+
   /** Upsert daily rows into northbeam_daily cache */
   upsertNorthbeamDaily(rows: {
     client_id: string; date: string; channel: string | null; campaign_id: string | null;
