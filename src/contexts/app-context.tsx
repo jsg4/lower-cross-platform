@@ -5,19 +5,26 @@ import { demoClients } from '@/lib/seed'
 import { dateRangePresets, type DateRange } from '@/lib/data/metrics'
 import type { Client } from '@/types/database'
 
+type ClientRow = Omit<Client, 'created_at' | 'updated_at'> & {
+  created_at?: string
+  updated_at?: string
+}
+
 interface AppContextType {
-  clients: Omit<Client, 'created_at' | 'updated_at'>[]
+  clients: ClientRow[]
   selectedClientId: string | null
   setSelectedClientId: (id: string | null) => void
-  selectedClient: Omit<Client, 'created_at' | 'updated_at'> | null
+  selectedClient: ClientRow | null
   dateRange: DateRange
   setDateRange: (range: DateRange) => void
   isLoading: boolean
+  refreshClients: () => Promise<void>
 }
 
 const AppContext = React.createContext<AppContextType | undefined>(undefined)
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
+  const [clients, setClients] = React.useState<ClientRow[]>(demoClients)
   const [selectedClientId, setSelectedClientId] = React.useState<string | null>(
     demoClients[0]?.id || null
   )
@@ -26,42 +33,66 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   )
   const [isLoading, setIsLoading] = React.useState(false)
 
+  const refreshClients = React.useCallback(async () => {
+    try {
+      const basePath = process.env.NEXT_PUBLIC_BASE_PATH || ''
+      const res = await fetch(`${basePath}/api/clients`)
+      if (res.ok) {
+        const data = await res.json()
+        if (Array.isArray(data) && data.length > 0) {
+          setClients(data)
+          // If selected client no longer exists, select first
+          setSelectedClientId((prev) => {
+            if (!prev || !data.find((c: ClientRow) => c.id === prev)) {
+              return data[0]?.id || null
+            }
+            return prev
+          })
+          return
+        }
+      }
+    } catch {
+      // API not available (e.g., static export) — keep seed data
+    }
+  }, [])
+
+  React.useEffect(() => {
+    refreshClients()
+  }, [refreshClients])
+
   const selectedClient = React.useMemo(
-    () => demoClients.find((c) => c.id === selectedClientId) || null,
-    [selectedClientId]
+    () => clients.find((c) => c.id === selectedClientId) || null,
+    [selectedClientId, clients]
   )
 
   const handleClientChange = React.useCallback((id: string | null) => {
-    setIsLoading(true)
     setSelectedClientId(id)
-    // Simulate loading delay
-    setTimeout(() => setIsLoading(false), 300)
   }, [])
 
   const handleDateRangeChange = React.useCallback((range: DateRange) => {
-    setIsLoading(true)
     setDateRange(range)
-    // Simulate loading delay
-    setTimeout(() => setIsLoading(false), 300)
   }, [])
 
   const value = React.useMemo(
     () => ({
-      clients: demoClients,
+      clients,
       selectedClientId,
       setSelectedClientId: handleClientChange,
       selectedClient,
       dateRange,
       setDateRange: handleDateRangeChange,
       isLoading,
+      refreshClients,
     }),
     [
+      clients,
       selectedClientId,
       handleClientChange,
       selectedClient,
       dateRange,
       handleDateRangeChange,
       isLoading,
+      refreshClients,
     ]
   )
 

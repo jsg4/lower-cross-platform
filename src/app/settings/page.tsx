@@ -33,17 +33,21 @@ import {
   Trash2,
   Key,
   Target,
-  Link,
   CheckCircle2,
   XCircle,
+  Loader2,
+  Eye,
+  EyeOff,
+  TestTube,
+  ShieldCheck,
 } from 'lucide-react'
-import { demoClients } from '@/lib/seed'
+
+// ── Types ────────────────────────────────────────────────────
 
 interface ClientFormData {
   name: string
   meta_account_id: string
   google_account_id: string
-  northbeam_api_key: string
   shopify_store_url: string
   target_mer: string
   target_contribution_margin_pct: string
@@ -53,18 +57,297 @@ const initialFormData: ClientFormData = {
   name: '',
   meta_account_id: '',
   google_account_id: '',
-  northbeam_api_key: '',
   shopify_store_url: '',
   target_mer: '3.5',
   target_contribution_margin_pct: '35',
 }
 
+type Platform = 'northbeam' | 'triple_whale' | 'shopify'
+
+interface PlatformConfig {
+  key: Platform
+  name: string
+  icon: string
+  color: string
+  bgColor: string
+  placeholder: string
+  needsStore?: boolean
+  needsNorthbeamClientId?: boolean
+}
+
+const PLATFORMS: PlatformConfig[] = [
+  {
+    key: 'northbeam',
+    name: 'Northbeam',
+    icon: 'N',
+    color: 'text-purple-400',
+    bgColor: 'bg-purple-500/20',
+    placeholder: 'Your Northbeam API key',
+    needsNorthbeamClientId: true,
+  },
+  {
+    key: 'triple_whale',
+    name: 'Triple Whale',
+    icon: 'TW',
+    color: 'text-blue-400',
+    bgColor: 'bg-blue-500/20',
+    placeholder: 'tw_...',
+  },
+  {
+    key: 'shopify',
+    name: 'Shopify',
+    icon: 'S',
+    color: 'text-emerald-400',
+    bgColor: 'bg-emerald-500/20',
+    placeholder: 'shpat_...',
+    needsStore: true,
+  },
+]
+
+// ── Connection Status Component ──────────────────────────────
+
+function ConnectionStatus({ connected }: { connected: boolean }) {
+  if (connected) {
+    return (
+      <div className="flex items-center gap-1 text-emerald-400">
+        <CheckCircle2 className="h-4 w-4" />
+        <span className="text-xs">Connected</span>
+      </div>
+    )
+  }
+  return (
+    <div className="flex items-center gap-1 text-zinc-500">
+      <XCircle className="h-4 w-4" />
+      <span className="text-xs">Not set</span>
+    </div>
+  )
+}
+
+// ── Credential Card Component ────────────────────────────────
+
+function CredentialCard({
+  platform,
+  clientId,
+  isConnected,
+  shopifyStore,
+  northbeamClientId: initialNbClientId,
+  onSaved,
+}: {
+  platform: PlatformConfig
+  clientId: string
+  isConnected: boolean
+  shopifyStore?: string
+  northbeamClientId?: string
+  onSaved: () => void
+}) {
+  const [apiKey, setApiKey] = React.useState('')
+  const [storeUrl, setStoreUrl] = React.useState(shopifyStore || '')
+  const [nbClientId, setNbClientId] = React.useState(initialNbClientId || '')
+  const [showKey, setShowKey] = React.useState(false)
+  const [testing, setTesting] = React.useState(false)
+  const [saving, setSaving] = React.useState(false)
+  const [testResult, setTestResult] = React.useState<{ valid: boolean; error?: string } | null>(null)
+
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH || ''
+
+  const handleTest = async () => {
+    if (!apiKey) return
+    if (platform.needsNorthbeamClientId && !nbClientId) {
+      setTestResult({ valid: false, error: 'Data-Client-ID is required' })
+      return
+    }
+    setTesting(true)
+    setTestResult(null)
+
+    try {
+      const body: Record<string, unknown> = { platform: platform.key, key: apiKey }
+      const config: Record<string, string> = {}
+      if (platform.needsStore) config.store = storeUrl
+      if (platform.needsNorthbeamClientId) config.northbeam_client_id = nbClientId
+      if (Object.keys(config).length > 0) body.config = config
+
+      const res = await fetch(`${basePath}/api/credentials/validate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json()
+      setTestResult(data)
+    } catch {
+      setTestResult({ valid: false, error: 'Failed to connect to validation service' })
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const handleSave = async () => {
+    if (!apiKey) return
+    if (platform.needsNorthbeamClientId && !nbClientId) return
+    setSaving(true)
+
+    try {
+      const body: Record<string, unknown> = { platform: platform.key, key: apiKey }
+      if (platform.needsStore) body.store = storeUrl
+      if (platform.needsNorthbeamClientId) body.northbeam_client_id = nbClientId
+
+      const res = await fetch(`${basePath}/api/clients/${clientId}/credentials`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+
+      if (res.ok) {
+        setApiKey('')
+        setTestResult(null)
+        onSaved()
+      }
+    } catch {
+      // silently fail
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleDisconnect = async () => {
+    if (!confirm(`Disconnect ${platform.name}? This will remove the stored API key.`)) return
+
+    try {
+      await fetch(`${basePath}/api/clients/${clientId}/credentials?platform=${platform.key}`, {
+        method: 'DELETE',
+      })
+      onSaved()
+    } catch {
+      // silently fail
+    }
+  }
+
+  return (
+    <div className="p-4 bg-zinc-800 rounded-lg space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className={`flex h-10 w-10 items-center justify-center rounded-lg ${platform.bgColor}`}>
+            <span className={`text-sm font-bold ${platform.color}`}>{platform.icon}</span>
+          </div>
+          <div>
+            <div className="font-medium text-white">{platform.name}</div>
+            {isConnected ? (
+              <span className="text-xs text-emerald-400 flex items-center gap-1">
+                <ShieldCheck className="h-3 w-3" /> API key stored (encrypted)
+              </span>
+            ) : (
+              <span className="text-xs text-zinc-500">No API key configured</span>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {isConnected && (
+            <Badge variant="success" className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30">
+              Connected
+            </Badge>
+          )}
+          {isConnected && (
+            <Button variant="ghost" size="sm" className="text-red-400 hover:text-red-300 text-xs"
+              onClick={handleDisconnect}>
+              Disconnect
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* Input area */}
+      <div className="space-y-2">
+        {platform.needsNorthbeamClientId && (
+          <div className="space-y-1">
+            <Label className="text-xs text-zinc-400">Data-Client-ID</Label>
+            <Input
+              value={nbClientId}
+              onChange={(e) => { setNbClientId(e.target.value); setTestResult(null) }}
+              placeholder={isConnected && initialNbClientId ? initialNbClientId : 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'}
+              className="bg-zinc-900 border-zinc-700 text-sm font-mono"
+            />
+            <p className="text-[10px] text-zinc-600">Found in Northbeam → Settings → API Keys</p>
+          </div>
+        )}
+        {platform.needsStore && (
+          <div className="space-y-1">
+            <Label className="text-xs text-zinc-400">Store URL</Label>
+            <Input
+              value={storeUrl}
+              onChange={(e) => setStoreUrl(e.target.value)}
+              placeholder="store-name.myshopify.com"
+              className="bg-zinc-900 border-zinc-700 text-sm"
+            />
+          </div>
+        )}
+        <div className="space-y-1">
+          {(platform.needsNorthbeamClientId || platform.needsStore) && (
+            <Label className="text-xs text-zinc-400">API Key</Label>
+          )}
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <Input
+                type={showKey ? 'text' : 'password'}
+                value={apiKey}
+                onChange={(e) => { setApiKey(e.target.value); setTestResult(null) }}
+                placeholder={isConnected ? '••••••••••••••••' : platform.placeholder}
+                className="bg-zinc-900 border-zinc-700 text-sm pr-10"
+              />
+              <button
+                type="button"
+                onClick={() => setShowKey(!showKey)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300"
+              >
+                {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleTest}
+              disabled={!apiKey || testing || (platform.needsNorthbeamClientId && !nbClientId)}
+              className="whitespace-nowrap"
+            >
+              {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <TestTube className="h-4 w-4 mr-1" />}
+              Test
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={!apiKey || saving || (platform.needsNorthbeamClientId && !nbClientId)}
+              className="whitespace-nowrap"
+            >
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Save
+            </Button>
+          </div>
+        </div>
+
+        {/* Test result */}
+        {testResult && (
+          <div className={`text-xs px-3 py-2 rounded ${
+            testResult.valid
+              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+              : 'bg-red-500/10 text-red-400 border border-red-500/20'
+          }`}>
+            {testResult.valid ? 'Connection successful' : `Failed: ${testResult.error}`}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Main Settings Page ───────────────────────────────────────
+
 export default function SettingsPage() {
-  const { selectedClientId, setSelectedClientId } = useAppContext()
-  const [clients, setClients] = React.useState(demoClients)
+  const { clients, selectedClientId, setSelectedClientId, refreshClients } = useAppContext()
   const [editingClient, setEditingClient] = React.useState<string | null>(null)
   const [formData, setFormData] = React.useState<ClientFormData>(initialFormData)
   const [isAddDialogOpen, setIsAddDialogOpen] = React.useState(false)
+  const [isSaving, setIsSaving] = React.useState(false)
+  const [saveError, setSaveError] = React.useState<string | null>(null)
+
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH || ''
 
   const handleEditClient = (clientId: string) => {
     const client = clients.find((c) => c.id === clientId)
@@ -73,39 +356,150 @@ export default function SettingsPage() {
         name: client.name,
         meta_account_id: client.meta_account_id || '',
         google_account_id: client.google_account_id || '',
-        northbeam_api_key: client.northbeam_api_key || '',
         shopify_store_url: client.shopify_store_url || '',
         target_mer: String(client.target_mer || '3.5'),
         target_contribution_margin_pct: String(client.target_contribution_margin_pct || '35'),
       })
       setEditingClient(clientId)
+      setSaveError(null)
     }
   }
 
-  const handleSaveClient = () => {
-    // In production, this would make an API call
-    console.log('Saving client:', formData)
-    setEditingClient(null)
-    setIsAddDialogOpen(false)
-    setFormData(initialFormData)
-  }
+  const handleSaveClient = async () => {
+    setIsSaving(true)
+    setSaveError(null)
 
-  const handleDeleteClient = (clientId: string) => {
-    // In production, this would make an API call
-    if (confirm('Are you sure you want to delete this client?')) {
-      setClients((prev) => prev.filter((c) => c.id !== clientId))
-      if (selectedClientId === clientId) {
-        setSelectedClientId(clients[0]?.id || null)
+    try {
+      if (editingClient) {
+        const res = await fetch(`${basePath}/api/clients/${editingClient}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...formData,
+            shopify_store: formData.shopify_store_url,
+          }),
+        })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.error || 'Failed to update client')
+        }
+      } else {
+        const res = await fetch(`${basePath}/api/clients`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...formData,
+            shopify_store: formData.shopify_store_url,
+          }),
+        })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.error || 'Failed to create client')
+        }
       }
+
+      await refreshClients()
+      setEditingClient(null)
+      setIsAddDialogOpen(false)
+      setFormData(initialFormData)
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'An error occurred')
+    } finally {
+      setIsSaving(false)
     }
   }
 
-  const maskApiKey = (key: string | null) => {
-    if (!key) return '—'
-    return `${key.slice(0, 4)}${'•'.repeat(12)}${key.slice(-4)}`
+  const handleDeleteClient = async (clientId: string) => {
+    if (!confirm('Are you sure you want to delete this client?')) return
+
+    try {
+      const res = await fetch(`${basePath}/api/clients/${clientId}`, { method: 'DELETE' })
+      if (res.ok) {
+        await refreshClients()
+        if (selectedClientId === clientId) {
+          setSelectedClientId(clients[0]?.id || null)
+        }
+      }
+    } catch {
+      // Silently fail for demo mode
+    }
+  }
+
+  const handleSaveTargets = async () => {
+    if (!selectedClient) return
+    setIsSaving(true)
+    setSaveError(null)
+
+    try {
+      const merInput = document.getElementById('client_mer') as HTMLInputElement
+      const marginInput = document.getElementById('client_margin') as HTMLInputElement
+
+      const res = await fetch(`${basePath}/api/clients/${selectedClient.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: selectedClient.name,
+          meta_account_id: selectedClient.meta_account_id,
+          google_account_id: selectedClient.google_account_id,
+          shopify_store: selectedClient.shopify_store_url,
+          target_mer: merInput?.value || selectedClient.target_mer,
+          target_contribution_margin_pct: marginInput?.value || selectedClient.target_contribution_margin_pct,
+        }),
+      })
+
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.error || 'Failed to update targets')
+      }
+
+      await refreshClients()
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'An error occurred')
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   const selectedClient = clients.find((c) => c.id === selectedClientId)
+
+  const clientForm = (
+    <div className="grid gap-4 py-4">
+      <div className="space-y-2">
+        <Label htmlFor="name">Client Name</Label>
+        <Input
+          id="name"
+          value={formData.name}
+          onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))}
+          placeholder="Acme Inc."
+        />
+      </div>
+      <Separator />
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="target_mer">Target MER</Label>
+          <Input
+            id="target_mer"
+            type="number"
+            step="0.1"
+            value={formData.target_mer}
+            onChange={(e) => setFormData((prev) => ({ ...prev, target_mer: e.target.value }))}
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="target_margin">Contribution Margin %</Label>
+          <Input
+            id="target_margin"
+            type="number"
+            value={formData.target_contribution_margin_pct}
+            onChange={(e) => setFormData((prev) => ({ ...prev, target_contribution_margin_pct: e.target.value }))}
+          />
+        </div>
+      </div>
+      {saveError && (
+        <p className="text-sm text-red-400">{saveError}</p>
+      )}
+    </div>
+  )
 
   return (
     <div className="space-y-6">
@@ -116,7 +510,7 @@ export default function SettingsPage() {
         </div>
         <div>
           <h1 className="text-2xl font-bold text-white">Settings</h1>
-          <p className="text-zinc-400">Manage clients and API credentials</p>
+          <p className="text-zinc-400">Manage clients, API credentials, and performance targets</p>
         </div>
       </div>
 
@@ -129,10 +523,16 @@ export default function SettingsPage() {
               Clients
             </CardTitle>
             <CardDescription>
-              Manage client accounts and their API connections
+              Manage client accounts and their data source connections
             </CardDescription>
           </div>
-          <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+          <Dialog open={isAddDialogOpen} onOpenChange={(open) => {
+            setIsAddDialogOpen(open)
+            if (!open) {
+              setFormData(initialFormData)
+              setSaveError(null)
+            }
+          }}>
             <DialogTrigger asChild>
               <Button>
                 <Plus className="h-4 w-4 mr-2" />
@@ -143,85 +543,18 @@ export default function SettingsPage() {
               <DialogHeader>
                 <DialogTitle>Add New Client</DialogTitle>
                 <DialogDescription>
-                  Enter client details and API credentials
+                  Create a client, then configure their API connections below.
                 </DialogDescription>
               </DialogHeader>
-              <div className="grid gap-4 py-4">
-                <div className="space-y-2">
-                  <Label htmlFor="name">Client Name</Label>
-                  <Input
-                    id="name"
-                    value={formData.name}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))}
-                    placeholder="Acme Inc."
-                  />
-                </div>
-                <Separator />
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="target_mer">Target MER</Label>
-                    <Input
-                      id="target_mer"
-                      type="number"
-                      step="0.1"
-                      value={formData.target_mer}
-                      onChange={(e) => setFormData((prev) => ({ ...prev, target_mer: e.target.value }))}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="target_margin">Contribution Margin %</Label>
-                    <Input
-                      id="target_margin"
-                      type="number"
-                      value={formData.target_contribution_margin_pct}
-                      onChange={(e) => setFormData((prev) => ({ ...prev, target_contribution_margin_pct: e.target.value }))}
-                    />
-                  </div>
-                </div>
-                <Separator />
-                <div className="space-y-2">
-                  <Label htmlFor="meta">Meta Account ID</Label>
-                  <Input
-                    id="meta"
-                    value={formData.meta_account_id}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, meta_account_id: e.target.value }))}
-                    placeholder="act_123456789"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="google">Google Customer ID</Label>
-                  <Input
-                    id="google"
-                    value={formData.google_account_id}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, google_account_id: e.target.value }))}
-                    placeholder="1234567890"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="northbeam">Northbeam API Key</Label>
-                  <Input
-                    id="northbeam"
-                    type="password"
-                    value={formData.northbeam_api_key}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, northbeam_api_key: e.target.value }))}
-                    placeholder="nb_..."
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="shopify">Shopify Store URL</Label>
-                  <Input
-                    id="shopify"
-                    value={formData.shopify_store_url}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, shopify_store_url: e.target.value }))}
-                    placeholder="https://store.myshopify.com"
-                  />
-                </div>
-              </div>
+              {clientForm}
               <DialogFooter>
                 <Button variant="outline" onClick={() => setIsAddDialogOpen(false)}>
                   Cancel
                 </Button>
-                <Button onClick={handleSaveClient}>Add Client</Button>
+                <Button onClick={handleSaveClient} disabled={isSaving || !formData.name}>
+                  {isSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                  Add Client
+                </Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
@@ -231,9 +564,9 @@ export default function SettingsPage() {
             <TableHeader>
               <TableRow className="border-zinc-800">
                 <TableHead className="text-zinc-400">Client</TableHead>
-                <TableHead className="text-zinc-400">Meta</TableHead>
-                <TableHead className="text-zinc-400">Google</TableHead>
                 <TableHead className="text-zinc-400">Northbeam</TableHead>
+                <TableHead className="text-zinc-400">Triple Whale</TableHead>
+                <TableHead className="text-zinc-400">Shopify</TableHead>
                 <TableHead className="text-zinc-400">Target MER</TableHead>
                 <TableHead className="text-right text-zinc-400">Actions</TableHead>
               </TableRow>
@@ -259,43 +592,13 @@ export default function SettingsPage() {
                     </div>
                   </TableCell>
                   <TableCell>
-                    {client.meta_account_id ? (
-                      <div className="flex items-center gap-1 text-emerald-400">
-                        <CheckCircle2 className="h-4 w-4" />
-                        <span className="text-xs">Connected</span>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-1 text-zinc-500">
-                        <XCircle className="h-4 w-4" />
-                        <span className="text-xs">Not set</span>
-                      </div>
-                    )}
+                    <ConnectionStatus connected={!!client.northbeam_api_key} />
                   </TableCell>
                   <TableCell>
-                    {client.google_account_id ? (
-                      <div className="flex items-center gap-1 text-emerald-400">
-                        <CheckCircle2 className="h-4 w-4" />
-                        <span className="text-xs">Connected</span>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-1 text-zinc-500">
-                        <XCircle className="h-4 w-4" />
-                        <span className="text-xs">Not set</span>
-                      </div>
-                    )}
+                    <ConnectionStatus connected={!!(client as any).triple_whale_api_key} />
                   </TableCell>
                   <TableCell>
-                    {client.northbeam_api_key ? (
-                      <div className="flex items-center gap-1 text-emerald-400">
-                        <CheckCircle2 className="h-4 w-4" />
-                        <span className="text-xs">Connected</span>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-1 text-zinc-500">
-                        <XCircle className="h-4 w-4" />
-                        <span className="text-xs">Not set</span>
-                      </div>
-                    )}
+                    <ConnectionStatus connected={!!(client as any).shopify_token || !!client.shopify_store_url} />
                   </TableCell>
                   <TableCell>
                     <span className="font-medium text-white">
@@ -328,87 +631,64 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* API Credentials for Selected Client */}
+      {/* Edit Client Dialog */}
+      <Dialog open={!!editingClient} onOpenChange={(open) => {
+        if (!open) {
+          setEditingClient(null)
+          setFormData(initialFormData)
+          setSaveError(null)
+        }
+      }}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Edit Client</DialogTitle>
+            <DialogDescription>
+              Update client details and performance targets
+            </DialogDescription>
+          </DialogHeader>
+          {clientForm}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingClient(null)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveClient} disabled={isSaving || !formData.name}>
+              {isSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Data Source Connections */}
       {selectedClient && (
         <Card className="bg-zinc-900 border-zinc-800">
           <CardHeader>
             <CardTitle className="text-lg font-medium text-white flex items-center gap-2">
               <Key className="h-5 w-5" />
-              API Credentials — {selectedClient.name}
+              Data Source Connections — {selectedClient.name}
             </CardTitle>
             <CardDescription>
-              Configure data source connections for this client
+              Connect data sources by entering API keys. Use the Test button to verify before saving.
+              All keys are encrypted at rest.
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-6">
-            {/* Meta */}
-            <div className="flex items-center justify-between p-4 bg-zinc-800 rounded-lg">
-              <div className="flex items-center gap-4">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/20">
-                  <span className="text-lg font-bold text-blue-400">M</span>
-                </div>
-                <div>
-                  <div className="font-medium text-white">Meta Marketing API</div>
-                  <div className="text-sm text-zinc-400">
-                    Account ID: {selectedClient.meta_account_id || 'Not configured'}
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center gap-3">
-                {selectedClient.meta_account_id && (
-                  <Badge variant="success">Connected</Badge>
-                )}
-                <Button variant="outline" size="sm">
-                  Configure
-                </Button>
-              </div>
-            </div>
-
-            {/* Google */}
-            <div className="flex items-center justify-between p-4 bg-zinc-800 rounded-lg">
-              <div className="flex items-center gap-4">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/20">
-                  <span className="text-lg font-bold text-emerald-400">G</span>
-                </div>
-                <div>
-                  <div className="font-medium text-white">Google Ads API</div>
-                  <div className="text-sm text-zinc-400">
-                    Customer ID: {selectedClient.google_account_id || 'Not configured'}
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center gap-3">
-                {selectedClient.google_account_id && (
-                  <Badge variant="success">Connected</Badge>
-                )}
-                <Button variant="outline" size="sm">
-                  Configure
-                </Button>
-              </div>
-            </div>
-
-            {/* Northbeam */}
-            <div className="flex items-center justify-between p-4 bg-zinc-800 rounded-lg">
-              <div className="flex items-center gap-4">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-500/20">
-                  <span className="text-lg font-bold text-purple-400">N</span>
-                </div>
-                <div>
-                  <div className="font-medium text-white">Northbeam API</div>
-                  <div className="text-sm text-zinc-400">
-                    API Key: {maskApiKey(selectedClient.northbeam_api_key)}
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center gap-3">
-                {selectedClient.northbeam_api_key && (
-                  <Badge variant="success">Connected</Badge>
-                )}
-                <Button variant="outline" size="sm">
-                  Configure
-                </Button>
-              </div>
-            </div>
+          <CardContent className="space-y-4">
+            {PLATFORMS.map((platform) => (
+              <CredentialCard
+                key={platform.key}
+                platform={platform}
+                clientId={selectedClient.id}
+                isConnected={
+                  platform.key === 'northbeam' ? !!selectedClient.northbeam_api_key :
+                  platform.key === 'triple_whale' ? !!(selectedClient as any).triple_whale_api_key :
+                  platform.key === 'shopify' ? !!((selectedClient as any).shopify_token || selectedClient.shopify_store_url) :
+                  false
+                }
+                shopifyStore={selectedClient.shopify_store_url || undefined}
+                northbeamClientId={selectedClient.northbeam_client_id || undefined}
+                onSaved={() => refreshClients()}
+              />
+            ))}
           </CardContent>
         </Card>
       )}
@@ -422,7 +702,7 @@ export default function SettingsPage() {
               Performance Targets — {selectedClient.name}
             </CardTitle>
             <CardDescription>
-              Set MER and contribution margin targets
+              Set MER and contribution margin targets for pacing and goal tracking
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -440,7 +720,7 @@ export default function SettingsPage() {
                   <span className="flex items-center text-zinc-400">x</span>
                 </div>
                 <p className="text-xs text-zinc-500">
-                  Marketing Efficiency Ratio target (Revenue ÷ Ad Spend)
+                  Marketing Efficiency Ratio target (Revenue / Ad Spend)
                 </p>
               </div>
               <div className="space-y-2">
@@ -460,7 +740,10 @@ export default function SettingsPage() {
               </div>
             </div>
             <div className="mt-6">
-              <Button>Save Changes</Button>
+              <Button onClick={handleSaveTargets} disabled={isSaving}>
+                {isSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Save Changes
+              </Button>
             </div>
           </CardContent>
         </Card>

@@ -16,6 +16,7 @@ export interface Database {
           meta_account_id: string | null
           google_account_id: string | null
           northbeam_api_key: string | null
+          northbeam_client_id: string | null
           shopify_store_url: string | null
           target_mer: number | null
           target_contribution_margin_pct: number | null
@@ -28,6 +29,7 @@ export interface Database {
           meta_account_id?: string | null
           google_account_id?: string | null
           northbeam_api_key?: string | null
+          northbeam_client_id?: string | null
           shopify_store_url?: string | null
           target_mer?: number | null
           target_contribution_margin_pct?: number | null
@@ -40,6 +42,7 @@ export interface Database {
           meta_account_id?: string | null
           google_account_id?: string | null
           northbeam_api_key?: string | null
+          northbeam_client_id?: string | null
           shopify_store_url?: string | null
           target_mer?: number | null
           target_contribution_margin_pct?: number | null

@@ -1,14 +1,15 @@
-import { subDays, format } from 'date-fns'
-import { 
-  demoClients, 
-  generateDailyMetrics, 
-  generateCreativeAssets, 
-  generateMERSnapshots,
-  aggregateDailyMetrics,
-  groupByChannel,
-  groupByCampaign,
-  groupByDate,
-} from '@/lib/seed'
+/**
+ * Data layer — public API
+ *
+ * In demo mode (default): calls seed-metrics.ts directly (in-memory data).
+ * In BigQuery mode: client components fetch from /api/metrics/* routes,
+ * which call bigquery-metrics.ts server-side.
+ *
+ * All page components import from this file. The switch is transparent.
+ */
+
+import { subDays } from 'date-fns'
+import * as seed from './seed-metrics'
 
 export type DateRange = {
   start: Date
@@ -46,153 +47,119 @@ export const dateRangePresets: Record<string, () => DateRange> = {
   },
 }
 
-// Cache for generated data
-const metricsCache = new Map<string, ReturnType<typeof generateDailyMetrics>>()
-const creativeCache = new Map<string, ReturnType<typeof generateCreativeAssets>>()
-const merCache = new Map<string, ReturnType<typeof generateMERSnapshots>>()
+const USE_BIGQUERY = process.env.NEXT_PUBLIC_DATA_SOURCE === 'bigquery'
 
-function getMetrics(clientId: string) {
-  if (!metricsCache.has(clientId)) {
-    metricsCache.set(clientId, generateDailyMetrics(clientId))
-  }
-  return metricsCache.get(clientId)!
+function dateParam(d: Date): string {
+  return d.toISOString().slice(0, 10)
 }
 
-function getCreatives(clientId: string) {
-  if (!creativeCache.has(clientId)) {
-    creativeCache.set(clientId, generateCreativeAssets(clientId))
-  }
-  return creativeCache.get(clientId)!
+async function apiFetch<T>(path: string, params: Record<string, string>): Promise<T> {
+  const qs = new URLSearchParams(params).toString()
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH || ''
+  const res = await fetch(`${basePath}/api${path}?${qs}`)
+  if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`)
+  return res.json()
 }
 
-function getMER(clientId: string) {
-  if (!merCache.has(clientId)) {
-    merCache.set(clientId, generateMERSnapshots(clientId))
-  }
-  return merCache.get(clientId)!
-}
+// ── Public API ─────────────────────────────────────────────
 
 export async function getClients() {
-  return demoClients
+  if (USE_BIGQUERY) {
+    return apiFetch<Awaited<ReturnType<typeof seed.getClients>>>('/clients', {})
+  }
+  return seed.getClients()
 }
 
 export async function getClient(clientId: string) {
-  return demoClients.find(c => c.id === clientId) || null
+  if (USE_BIGQUERY) {
+    const clients = await getClients()
+    return clients.find(c => c.id === clientId) || null
+  }
+  return seed.getClient(clientId)
 }
 
 export async function getClientSummary(clientId: string, dateRange: DateRange) {
-  const metrics = getMetrics(clientId)
-  const filtered = filterByDateRange(metrics, dateRange)
-  const aggregated = aggregateDailyMetrics(filtered)
-  
-  // Calculate previous period for comparison
-  const periodLength = Math.ceil((dateRange.end.getTime() - dateRange.start.getTime()) / (1000 * 60 * 60 * 24))
-  const prevRange = {
-    start: subDays(dateRange.start, periodLength),
-    end: subDays(dateRange.start, 1),
+  if (USE_BIGQUERY) {
+    return apiFetch<Awaited<ReturnType<typeof seed.getClientSummary>>>('/metrics/summary', {
+      clientId,
+      start: dateParam(dateRange.start),
+      end: dateParam(dateRange.end),
+    })
   }
-  const prevFiltered = filterByDateRange(metrics, prevRange)
-  const prevAggregated = aggregateDailyMetrics(prevFiltered)
-  
-  return {
-    current: aggregated,
-    previous: prevAggregated,
-    changes: {
-      spend: calculateChange(aggregated.spend, prevAggregated.spend),
-      revenue: calculateChange(aggregated.revenue, prevAggregated.revenue),
-      roas: calculateChange(aggregated.roas, prevAggregated.roas),
-      cpa: calculateChange(aggregated.cpa, prevAggregated.cpa),
-    },
-  }
+  return seed.getClientSummary(clientId, dateRange)
 }
 
 export async function getChannelBreakdown(clientId: string, dateRange: DateRange) {
-  const metrics = getMetrics(clientId)
-  const filtered = filterByDateRange(metrics, dateRange)
-  return groupByChannel(filtered)
+  if (USE_BIGQUERY) {
+    return apiFetch<Awaited<ReturnType<typeof seed.getChannelBreakdown>>>('/metrics/channels', {
+      clientId,
+      start: dateParam(dateRange.start),
+      end: dateParam(dateRange.end),
+    })
+  }
+  return seed.getChannelBreakdown(clientId, dateRange)
 }
 
 export async function getCampaignPerformance(clientId: string, channel: string | null, dateRange: DateRange) {
-  const metrics = getMetrics(clientId)
-  let filtered = filterByDateRange(metrics, dateRange)
-  
-  if (channel) {
-    filtered = filtered.filter(m => m.channel === channel)
+  if (USE_BIGQUERY) {
+    const params: Record<string, string> = {
+      clientId,
+      start: dateParam(dateRange.start),
+      end: dateParam(dateRange.end),
+    }
+    if (channel) params.channel = channel
+    return apiFetch<Awaited<ReturnType<typeof seed.getCampaignPerformance>>>('/metrics/campaigns', params)
   }
-  
-  return groupByCampaign(filtered)
+  return seed.getCampaignPerformance(clientId, channel, dateRange)
 }
 
 export async function getDailyTrends(clientId: string, dateRange: DateRange) {
-  const metrics = getMetrics(clientId)
-  const filtered = filterByDateRange(metrics, dateRange)
-  return groupByDate(filtered)
+  if (USE_BIGQUERY) {
+    return apiFetch<Awaited<ReturnType<typeof seed.getDailyTrends>>>('/metrics/trends', {
+      clientId,
+      start: dateParam(dateRange.start),
+      end: dateParam(dateRange.end),
+    })
+  }
+  return seed.getDailyTrends(clientId, dateRange)
 }
 
 export async function getMERHistory(clientId: string, dateRange: DateRange) {
-  const snapshots = getMER(clientId)
-  const startStr = format(dateRange.start, 'yyyy-MM-dd')
-  const endStr = format(dateRange.end, 'yyyy-MM-dd')
-  
-  return snapshots
-    .filter(s => s.date >= startStr && s.date <= endStr)
-    .sort((a, b) => a.date.localeCompare(b.date))
+  if (USE_BIGQUERY) {
+    return apiFetch<Awaited<ReturnType<typeof seed.getMERHistory>>>('/metrics/mer', {
+      clientId,
+      start: dateParam(dateRange.start),
+      end: dateParam(dateRange.end),
+    })
+  }
+  return seed.getMERHistory(clientId, dateRange)
 }
 
 export async function getCreativePerformance(clientId: string, dateRange: DateRange) {
-  const creatives = getCreatives(clientId)
-  
-  // Calculate ROAS for sorting
-  return creatives
-    .map(c => ({
-      ...c,
-      roas: c.total_spend > 0 ? c.total_revenue / c.total_spend : 0,
-      ctr: c.total_impressions > 0 ? (c.total_clicks / c.total_impressions) * 100 : 0,
-    }))
-    .sort((a, b) => b.roas - a.roas)
+  if (USE_BIGQUERY) {
+    return apiFetch<Awaited<ReturnType<typeof seed.getCreativePerformance>>>('/metrics/creative', {
+      clientId,
+      start: dateParam(dateRange.start),
+      end: dateParam(dateRange.end),
+    })
+  }
+  return seed.getCreativePerformance(clientId, dateRange)
 }
 
 export async function getAdsetPerformance(clientId: string, campaignId: string, dateRange: DateRange) {
-  const metrics = getMetrics(clientId)
-  const filtered = filterByDateRange(metrics, dateRange)
-    .filter(m => m.campaign_id === campaignId)
-  
-  // Group by adset
-  const adsets: Record<string, typeof filtered> = {}
-  for (const metric of filtered) {
-    const key = metric.adset_id || 'unknown'
-    if (!adsets[key]) {
-      adsets[key] = []
-    }
-    adsets[key].push(metric)
+  if (USE_BIGQUERY) {
+    return apiFetch<Awaited<ReturnType<typeof seed.getAdsetPerformance>>>('/metrics/adsets', {
+      clientId,
+      campaignId,
+      start: dateParam(dateRange.start),
+      end: dateParam(dateRange.end),
+    })
   }
-  
-  return Object.entries(adsets).map(([adsetId, data]) => ({
-    adsetId,
-    adsetName: data[0].adset_name,
-    campaignId: data[0].campaign_id,
-    campaignName: data[0].campaign_name,
-    channel: data[0].channel,
-    ...aggregateDailyMetrics(data),
-  }))
+  return seed.getAdsetPerformance(clientId, campaignId, dateRange)
 }
 
-// Helper functions
-function filterByDateRange(
-  metrics: ReturnType<typeof generateDailyMetrics>,
-  dateRange: { start: Date; end: Date }
-) {
-  const startStr = format(dateRange.start, 'yyyy-MM-dd')
-  const endStr = format(dateRange.end, 'yyyy-MM-dd')
-  return metrics.filter(m => m.date >= startStr && m.date <= endStr)
-}
+// ── Exported types (unchanged) ─────────────────────────────
 
-function calculateChange(current: number, previous: number): number {
-  if (previous === 0) return current > 0 ? 100 : 0
-  return ((current - previous) / previous) * 100
-}
-
-// Types for the aggregated data
 export type Summary = Awaited<ReturnType<typeof getClientSummary>>
 export type ChannelData = Awaited<ReturnType<typeof getChannelBreakdown>>[number]
 export type CampaignData = Awaited<ReturnType<typeof getCampaignPerformance>>[number]
